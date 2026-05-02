@@ -7,10 +7,12 @@ const userSchema = new mongoose.Schema(
     email: { type: String, required: true, unique: true, lowercase: true, trim: true },
     password: { type: String, required: true, minlength: 6 },
     role: { type: String, enum: ["admin", "leader", "user"], default: "user" },
-    organizationId: { type: mongoose.Schema.Types.ObjectId, ref: "Organization", required: true },
+    organizationId: { type: mongoose.Schema.Types.ObjectId, ref: "Organization", required: true, index: true },
   },
   { timestamps: true }
 );
+
+userSchema.index({ organizationId: 1, role: 1 });
 
 userSchema.pre("save", async function () {
   if (!this.isModified("password")) return;
@@ -18,7 +20,7 @@ userSchema.pre("save", async function () {
 });
 
 userSchema.methods.comparePassword = function (candidate) {
-  return bcrypt.compare(candidate, this.password);
+  return bcrypt.compare(String(candidate || ""), this.password);
 };
 
 module.exports = mongoose.models.User || mongoose.model("User", userSchema);

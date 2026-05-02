@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/router";
 
 import type { AuthUser, Project, Stats, Task, TeamUser } from "../components/dashboard/types";
-import { fetchDashboardData } from "../components/dashboard/api";
+import { fetchDashboardData, fetchTasksPage } from "../components/dashboard/api";
 import {
   computeMyProgress,
   computeProgressByUserId,
@@ -19,12 +19,26 @@ import TeamsPanel from "../components/dashboard/TeamsPanel";
 
 import { disconnectSocket, getSocket } from "../lib/socket";
 
+const TASKS_PAGE_SIZE = 25;
+
 const upsertTask = (prev: Task[], incoming: Task) => {
   const id = String((incoming as any)?._id || "");
   if (!id) return prev;
 
   const idx = prev.findIndex((t) => String((t as any)?._id) === id);
   if (idx === -1) return [incoming, ...prev];
+
+  const copy = [...prev];
+  copy[idx] = { ...copy[idx], ...incoming };
+  return copy;
+};
+
+const upsertTaskAtEnd = (prev: Task[], incoming: Task) => {
+  const id = String((incoming as any)?._id || "");
+  if (!id) return prev;
+
+  const idx = prev.findIndex((t) => String((t as any)?._id) === id);
+  if (idx === -1) return [...prev, incoming];
 
   const copy = [...prev];
   copy[idx] = { ...copy[idx], ...incoming };
@@ -54,6 +68,11 @@ export default function Dashboard() {
     totalTasks: 0,
     completionRate: 0,
   });
+
+  const [tasksPage, setTasksPage] = useState(1);
+  const [tasksHasNext, setTasksHasNext] = useState(false);
+  const [tasksTotal, setTasksTotal] = useState(0);
+  const [loadingMoreTasks, setLoadingMoreTasks] = useState(false);
 
   const [activeSection, setActiveSection] = useState<"projects" | "tasks" | "teams">("projects");
   const [error, setError] = useState("");
@@ -102,7 +121,7 @@ export default function Dashboard() {
     setError("");
 
     try {
-      const data = await fetchDashboardData(authToken);
+      const data = await fetchDashboardData(authToken, { tasksPage: 1, tasksLimit: TASKS_PAGE_SIZE });
 
       setProjects(Array.isArray(data.projects) ? data.projects : []);
       setTeam(Array.isArray(data.users) ? data.users : []);
@@ -114,13 +133,44 @@ export default function Dashboard() {
             status: normalizeStatus(t.status),
           }))
         : [];
+
       setTasks(normalizedTasks);
+      setTasksPage(Number(data.tasksPage?.page || 1));
+      setTasksHasNext(Boolean(data.tasksPage?.hasNext || false));
+      setTasksTotal(Number(data.tasksPage?.total || normalizedTasks.length || 0));
     } catch (err) {
       setError((err as Error).message || "Failed to load dashboard");
     } finally {
       setLoading(false);
     }
   }, []);
+
+  const loadMoreTasks = useCallback(async () => {
+    if (!token) return;
+    if (loadingMoreTasks) return;
+    if (!tasksHasNext) return;
+
+    setLoadingMoreTasks(true);
+    setError("");
+
+    try {
+      const nextPage = tasksPage + 1;
+      const pageData = await fetchTasksPage(token, { page: nextPage, limit: TASKS_PAGE_SIZE });
+
+      const incoming = Array.isArray(pageData.items)
+        ? pageData.items.map((t: any) => ({ ...t, status: normalizeStatus(t.status) }))
+        : [];
+
+      setTasks((prev) => incoming.reduce(upsertTaskAtEnd, prev));
+      setTasksPage(Number(pageData.page || nextPage));
+      setTasksHasNext(Boolean(pageData.hasNext || false));
+      setTasksTotal(Number(pageData.total || tasksTotal));
+    } catch (err) {
+      setError((err as Error).message || "Failed to load more tasks");
+    } finally {
+      setLoadingMoreTasks(false);
+    }
+  }, [token, loadingMoreTasks, tasksHasNext, tasksPage, tasksTotal]);
 
   useEffect(() => {
     if (!mounted) return;
@@ -248,6 +298,9 @@ export default function Dashboard() {
             token={token}
             projects={projects}
             assignees={eligibleAssignees}
+            hasMore={tasksHasNext}
+            loadingMore={loadingMoreTasks}
+            onLoadMore={loadMoreTasks}
             onReload={async () => {
               if (token) await loadData(token);
             }}

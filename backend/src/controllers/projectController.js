@@ -1,6 +1,7 @@
 const Project = require("../models/Project");
 const Task = require("../models/Task");
 const User = require("../models/User");
+const { invalidateOrgProjectIds } = require("../utils/taskCache");
 
 const createProject = async (req, res, next) => {
   try {
@@ -32,6 +33,8 @@ const createProject = async (req, res, next) => {
       leaderId: finalLeaderId,
       tasks: [],
     });
+
+    invalidateOrgProjectIds(req.user.organizationId);
 
     return res.status(201).json(project);
   } catch (err) {

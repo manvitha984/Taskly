@@ -1,7 +1,10 @@
+const mongoose = require("mongoose");
 const User = require("../models/User");
 const Organization = require("../models/Organization");
 
 const allowedRoles = new Set(["admin", "leader", "user"]);
+
+const normalizeEmail = (email) => String(email || "").toLowerCase().trim();
 
 const sanitizeUser = (u) => ({
   _id: u._id,
@@ -13,22 +16,49 @@ const sanitizeUser = (u) => ({
   updatedAt: u.updatedAt,
 });
 
-const getUsers = async (req, res, next) => {
+const requireOrgId = (req, res) => {
+  const orgId = String(req.user?.organizationId || "");
+  if (!orgId || !mongoose.Types.ObjectId.isValid(orgId)) {
+    res.status(401).json({ message: "Not authorized" });
+    return null;
+  }
+  return orgId;
+};
+
+const isDupKeyError = (err) => {
+  const code = err?.code;
+  return code === 11000 || code === 11001;
+};
+
+const getUsers = async (req, res) => {
   try {
-    const users = await User.find({ organizationId: req.user.organizationId }).select(
-      "_id name email role organizationId createdAt updatedAt"
-    );
-    return res.json(users);
+    const orgId = requireOrgId(req, res);
+    if (!orgId) return;
+
+    const users = await User.find({ organizationId: orgId })
+      .select("_id name email role organizationId createdAt updatedAt")
+      .sort({ createdAt: 1, _id: 1 })
+      .lean();
+
+    return res.json(Array.isArray(users) ? users : []);
   } catch (err) {
-    return next(err);
+    console.error("ERROR:", err);
+    return res.status(500).json({ message: "Server error", error: err?.message || String(err) });
   }
 };
 
-const createUser = async (req, res, next) => {
+const createUser = async (req, res) => {
   try {
+    const orgId = requireOrgId(req, res);
+    if (!orgId) return;
+
     const { name, email, password, role } = req.body;
 
-    if (!name || !email || !password) {
+    const trimmedName = typeof name === "string" ? name.trim() : "";
+    const normalizedEmail = normalizeEmail(email);
+    const pw = typeof password === "string" ? password : "";
+
+    if (!trimmedName || !normalizedEmail || !pw) {
       return res.status(400).json({ message: "name, email and password are required" });
     }
 
@@ -37,39 +67,41 @@ const createUser = async (req, res, next) => {
       return res.status(400).json({ message: "Invalid role" });
     }
 
-    const exists = await User.findOne({ email: String(email).toLowerCase().trim() });
-    if (exists) return res.status(409).json({ message: "Email already exists" });
-
-    const orgId = req.user.organizationId;
-    const org = await Organization.findById(orgId).select("_id");
+    const org = await Organization.findById(orgId).select("_id").lean();
     if (!org) return res.status(400).json({ message: "Organization not found" });
 
+    const exists = await User.findOne({ email: normalizedEmail }).select("_id").lean();
+    if (exists) return res.status(409).json({ message: "Email already exists" });
+
     const user = await User.create({
-      name,
-      email,
-      password,
+      name: trimmedName,
+      email: normalizedEmail,
+      password: pw,
       role: finalRole,
       organizationId: orgId,
     });
 
     await Organization.updateOne({ _id: orgId }, { $addToSet: { members: user._id } });
 
-    return res.status(201).json({ user: sanitizeUser(user) });
+    return res.status(201).json(sanitizeUser(user));
   } catch (err) {
-    return next(err);
+    console.error("CREATE USER ERROR:", err);
+    if (isDupKeyError(err)) return res.status(409).json({ message: "Email already exists" });
+    return res.status(500).json({ message: "Server error", error: err?.message || String(err) });
   }
 };
 
-const updateUserRole = async (req, res, next) => {
+const updateUserRole = async (req, res) => {
   try {
+    const orgId = requireOrgId(req, res);
+    if (!orgId) return;
+
     const { role } = req.body;
     if (!allowedRoles.has(role)) return res.status(400).json({ message: "Invalid role" });
 
-    const orgId = req.user.organizationId;
     const user = await User.findOne({ _id: req.params.id, organizationId: orgId });
     if (!user) return res.status(404).json({ message: "User not found" });
 
-    // Prevent removing the last admin in an org
     if (user.role === "admin" && role !== "admin") {
       const adminCount = await User.countDocuments({ organizationId: orgId, role: "admin" });
       if (adminCount <= 1) {
@@ -80,9 +112,10 @@ const updateUserRole = async (req, res, next) => {
     user.role = role;
     await user.save();
 
-    return res.json({ user: sanitizeUser(user) });
+    return res.json(sanitizeUser(user));
   } catch (err) {
-    return next(err);
+    console.error("ERROR:", err);
+    return res.status(500).json({ message: "Server error", error: err?.message || String(err) });
   }
 };
 

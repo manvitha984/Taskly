@@ -61,3 +61,11 @@ export type AuthUser = {
 };
 
 export type CreateUserRole = "user" | "leader";
+
+export type PaginatedResponse<T> = {
+  items: T[];
+  page: number;
+  limit: number;
+  total: number;
+  hasNext: boolean;
+};

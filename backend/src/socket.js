@@ -10,10 +10,16 @@ const initSocket = (httpServer) => {
   }
 
   const clientUrl = process.env.CLIENT_URL || "http://localhost:3000";
+  const allowedOrigins = new Set([clientUrl, "http://localhost:3000", "http://127.0.0.1:3000"]);
 
   io = new Server(httpServer, {
+    path: "/socket.io",
     cors: {
-      origin: clientUrl,
+      origin: (origin, cb) => {
+        if (!origin) return cb(null, true);
+        if (allowedOrigins.has(String(origin))) return cb(null, true);
+        return cb(new Error("Not allowed by CORS"));
+      },
       methods: ["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
       credentials: true,
     },

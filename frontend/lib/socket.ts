@@ -13,7 +13,6 @@ const attachBaseDebugHandlers = (s: Socket) => {
   s.off("connect");
   s.off("disconnect");
   s.off("connect_error");
-  s.off("reconnect_attempt");
 
   s.on("connect", () => {
     console.log("[socket-client] connected", { id: s.id, url: socketBaseUrl() });
@@ -27,6 +26,7 @@ const attachBaseDebugHandlers = (s: Socket) => {
     console.log("[socket-client] connect_error", { message: err?.message });
   });
 
+  s.io.off("reconnect_attempt");
   s.io.on("reconnect_attempt", (attempt) => {
     console.log("[socket-client] reconnect_attempt", { attempt });
   });
@@ -49,12 +49,15 @@ export const getSocket = (token: string) => {
   if (!baseUrl) throw new Error("NEXT_PUBLIC_API_URL is missing (cannot derive socket base URL)");
 
   socket = io(baseUrl, {
+    path: "/socket.io",
     auth: { token },
+    transports: ["polling", "websocket"],
     autoConnect: true,
     reconnection: true,
     reconnectionAttempts: Infinity,
     reconnectionDelay: 500,
     reconnectionDelayMax: 5000,
+    timeout: 20000,
     withCredentials: true,
   });
 

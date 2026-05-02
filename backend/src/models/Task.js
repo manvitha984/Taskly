@@ -2,6 +2,8 @@ const mongoose = require("mongoose");
 
 const taskSchema = new mongoose.Schema(
   {
+    organizationId: { type: mongoose.Schema.Types.ObjectId, ref: "Organization", default: null },
+
     title: { type: String, required: true, trim: true },
     description: { type: String, default: "" },
 
@@ -27,5 +29,11 @@ const taskSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+taskSchema.index({ organizationId: 1, createdAt: -1 });
+taskSchema.index({ projectId: 1, createdAt: -1 });
+taskSchema.index({ organizationId: 1, assigneeId: 1, createdAt: -1 });
+taskSchema.index({ organizationId: 1, assigneeIds: 1, createdAt: -1 });
+taskSchema.index({ organizationId: 1, status: 1, createdAt: -1 });
 
 module.exports = mongoose.models.Task || mongoose.model("Task", taskSchema);

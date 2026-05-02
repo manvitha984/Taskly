@@ -14,6 +14,9 @@ export default function TasksPanel({
   token,
   projects,
   assignees,
+  hasMore,
+  loadingMore,
+  onLoadMore,
   onReload,
   onError,
 }: {
@@ -26,6 +29,9 @@ export default function TasksPanel({
   token: string | null;
   projects: Project[];
   assignees: TeamUser[];
+  hasMore: boolean;
+  loadingMore: boolean;
+  onLoadMore: () => void | Promise<void>;
   onReload: () => void | Promise<void>;
   onError: (message: string) => void;
 }) {
@@ -68,6 +74,18 @@ export default function TasksPanel({
           canManage={canManage}
           onUpdateStatus={onUpdateStatus}
         />
+      ) : null}
+
+      {hasMore ? (
+        <div className="mt-6 flex justify-center">
+          <button
+            onClick={onLoadMore}
+            disabled={loadingMore}
+            className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {loadingMore ? "Loading..." : "Load more"}
+          </button>
+        </div>
       ) : null}
 
       {taskModalOpen ? (

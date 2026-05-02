@@ -1,4 +1,4 @@
-import type { Project, Stats, Task, TeamUser } from "./types";
+import type { PaginatedResponse, Project, Stats, Task, TeamUser } from "./types";
 
 const baseUrl = () => String(process.env.NEXT_PUBLIC_API_URL || "");
 
@@ -17,13 +17,59 @@ const requireOk = async (res: Response, fallbackMessage: string) => {
   throw new Error(message);
 };
 
-export const fetchDashboardData = async (token: string) => {
+const toPositiveInt = (value: unknown, fallback: number) => {
+  const n = Number.parseInt(String(value ?? ""), 10);
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  return n;
+};
+
+export const fetchTasksPage = async (
+  token: string,
+  params?: { page?: number; limit?: number; projectId?: string; status?: "todo" | "in-progress" | "done" }
+): Promise<PaginatedResponse<Task>> => {
+  const page = toPositiveInt(params?.page, 1);
+  const limit = toPositiveInt(params?.limit, 25);
+
+  const qs = new URLSearchParams();
+  qs.set("page", String(page));
+  qs.set("limit", String(limit));
+  if (params?.projectId) qs.set("projectId", params.projectId);
+  if (params?.status) qs.set("status", params.status);
+
+  const res = await fetch(`${baseUrl()}/tasks?${qs.toString()}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+
+  await requireOk(res, "Failed to fetch tasks");
+  const data = await res.json().catch(() => ({}));
+
+  if (Array.isArray(data)) {
+    const items = data as Task[];
+    return { items, page: 1, limit: items.length || limit, total: items.length, hasNext: false };
+  }
+
+  const items = Array.isArray((data as any)?.items) ? ((data as any).items as Task[]) : [];
+  const out: PaginatedResponse<Task> = {
+    items,
+    page: Number((data as any)?.page || page),
+    limit: Number((data as any)?.limit || limit),
+    total: Number((data as any)?.total || items.length),
+    hasNext: Boolean((data as any)?.hasNext || false),
+  };
+
+  return out;
+};
+
+export const fetchDashboardData = async (token: string, opts?: { tasksPage?: number; tasksLimit?: number }) => {
   const headers = { Authorization: `Bearer ${token}` };
+
+  const tasksPage = toPositiveInt(opts?.tasksPage, 1);
+  const tasksLimit = toPositiveInt(opts?.tasksLimit, 25);
 
   const [projectsRes, statsRes, tasksRes, usersRes] = await Promise.all([
     fetch(`${baseUrl()}/projects`, { headers }),
     fetch(`${baseUrl()}/projects/stats`, { headers }),
-    fetch(`${baseUrl()}/tasks`, { headers }),
+    fetch(`${baseUrl()}/tasks?page=${tasksPage}&limit=${tasksLimit}`, { headers }),
     fetch(`${baseUrl()}/users`, { headers }),
   ]);
 
@@ -41,6 +87,20 @@ export const fetchDashboardData = async (token: string) => {
     usersRes.json(),
   ]);
 
+  let tasksPageData: PaginatedResponse<Task>;
+  if (Array.isArray(tasksData)) {
+    const items = tasksData as Task[];
+    tasksPageData = { items, page: 1, limit: items.length || tasksLimit, total: items.length, hasNext: false };
+  } else {
+    tasksPageData = {
+      items: Array.isArray((tasksData as any)?.items) ? ((tasksData as any).items as Task[]) : [],
+      page: Number((tasksData as any)?.page || tasksPage),
+      limit: Number((tasksData as any)?.limit || tasksLimit),
+      total: Number((tasksData as any)?.total || 0),
+      hasNext: Boolean((tasksData as any)?.hasNext || false),
+    };
+  }
+
   return {
     projects: (Array.isArray(projectsData) ? projectsData : []) as Project[],
     stats: {
@@ -49,7 +109,8 @@ export const fetchDashboardData = async (token: string) => {
       totalTasks: Number((statsData as any)?.totalTasks || 0),
       completionRate: Number((statsData as any)?.completionRate || 0),
     } as Stats,
-    tasks: (Array.isArray(tasksData) ? tasksData : []) as Task[],
+    tasks: tasksPageData.items,
+    tasksPage: tasksPageData,
     users: (Array.isArray(usersData) ? usersData : []) as TeamUser[],
   };
 };

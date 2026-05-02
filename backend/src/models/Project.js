@@ -11,4 +11,6 @@ const projectSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+projectSchema.index({ organizationId: 1, createdAt: -1 });
+
 module.exports = mongoose.models.Project || mongoose.model("Project", projectSchema);

@@ -3,6 +3,13 @@ const Project = require("../models/Project");
 const User = require("../models/User");
 const Notification = require("../models/Notification");
 const { getIo } = require("../socket");
+const {
+  buildTasksCacheKey,
+  getCachedTasksPage,
+  setCachedTasksPage,
+  invalidateTasksForOrg,
+  getOrgProjectIdsCached,
+} = require("../utils/taskCache");
 
 const normalizeStatus = (value) => {
   if (!value) return "todo";
@@ -13,14 +20,6 @@ const normalizeStatus = (value) => {
 
 const isAllowedNewStatus = (value) => ["todo", "in-progress", "done"].includes(value);
 
-const priorityRank = (value) => {
-  const v = value == null ? "medium" : String(value);
-  if (v === "high") return 0;
-  if (v === "medium") return 1;
-  if (v === "low") return 2;
-  return 1;
-};
-
 const toStringId = (v) => (v == null ? "" : String(v));
 
 const taskAssigneeMatchesUser = (task, userId) => {
@@ -30,11 +29,6 @@ const taskAssigneeMatchesUser = (task, userId) => {
   const legacy = Array.isArray(task.assigneeIds) ? task.assigneeIds : [];
   const legacyIds = legacy.map((x) => (typeof x === "string" ? x : String(x?._id || x)));
   return legacyIds.includes(uid);
-};
-
-const getOrgProjectIds = async (organizationId) => {
-  const projects = await Project.find({ organizationId }).select("_id");
-  return projects.map((p) => p._id);
 };
 
 const emitToOrg = (organizationId, eventName, payload) => {
@@ -62,16 +56,35 @@ const emitToOrg = (organizationId, eventName, payload) => {
   }
 };
 
+const parsePositiveInt = (value, fallback) => {
+  const n = Number.parseInt(String(value ?? ""), 10);
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  return n;
+};
+
+const clamp = (n, min, max) => Math.max(min, Math.min(max, n));
+
+const normalizeTaskJson = (t) => {
+  const json = t?.toJSON ? t.toJSON() : t;
+
+  if (json && typeof json === "object") {
+    json.status = normalizeStatus(json.status);
+
+    if (!json.assigneeId && Array.isArray(json.assigneeIds) && json.assigneeIds.length > 0) {
+      json.assigneeId = json.assigneeIds[0];
+    }
+  }
+
+  return json;
+};
+
 const createTask = async (req, res, next) => {
   try {
     if (!["admin", "leader"].includes(req.user.role)) {
       return res.status(403).json({ message: "Only admin/leader can create tasks" });
     }
 
-    console.log("REQ BODY:", req.body);
     const { title, projectId, assigneeId, priority } = req.body;
-    console.log("Incoming priority:", priority);
-
     const { description, assigneeIds, dueDate } = req.body;
 
     const trimmedTitle = typeof title === "string" ? title.trim() : title;
@@ -96,7 +109,8 @@ const createTask = async (req, res, next) => {
     const project = await Project.findOne({
       _id: projectId,
       organizationId: req.user.organizationId,
-    });
+    }).select("_id organizationId tasks");
+
     if (!project) return res.status(404).json({ message: "Project not found" });
 
     const validatedAssignee = await User.findOne({
@@ -113,6 +127,8 @@ const createTask = async (req, res, next) => {
     }
 
     const created = await Task.create({
+      organizationId: req.user.organizationId,
+
       title: trimmedTitle,
       description: trimmedDescription,
       projectId,
@@ -124,7 +140,6 @@ const createTask = async (req, res, next) => {
       assigneeId: validatedAssignee._id,
       assignedBy: req.user.userId,
 
-      
       assigneeIds: [validatedAssignee._id],
     });
 
@@ -142,6 +157,9 @@ const createTask = async (req, res, next) => {
     emitToOrg(req.user.organizationId, "task-created", payload);
     emitToOrg(req.user.organizationId, "task-updated", payload);
 
+    console.log("[CACHE CLEAR TRIGGERED] for org:", req.user.organizationId);
+    invalidateTasksForOrg(req.user.organizationId);
+
     return res.status(201).json(task);
   } catch (err) {
     return next(err);
@@ -150,47 +168,133 @@ const createTask = async (req, res, next) => {
 
 const getTasks = async (req, res, next) => {
   try {
-    const orgId = req.user.organizationId;
+    console.log("[TASK API] Request received");
 
-    const allowedProjectIds = await getOrgProjectIds(orgId);
-    if (allowedProjectIds.length === 0) return res.json([]);
+    const orgId = toStringId(req.user.organizationId);
+    const role = toStringId(req.user.role);
+    const userId = toStringId(req.user.userId);
 
-    let query = { projectId: { $in: allowedProjectIds } };
+    const page = parsePositiveInt(req.query?.page, 1);
+    const limit = clamp(parsePositiveInt(req.query?.limit, 25), 1, 100);
+    const skip = (page - 1) * limit;
 
-    if (req.user.role === "user") {
-      query = {
-        ...query,
-        $or: [{ assigneeId: req.user.userId }, { assigneeIds: req.user.userId }],
-      };
+    console.log("[PAGINATION]", { page, limit });
+
+    const statusParam = req.query?.status ? normalizeStatus(String(req.query.status)) : "";
+    if (statusParam && !isAllowedNewStatus(statusParam)) {
+      return res.status(400).json({ message: "Invalid status filter. Use: todo, in-progress, done" });
     }
 
-    const tasks = await Task.find(query)
-      .populate("assigneeId", "name email role")
-      .populate("assignedBy", "name email role")
-      .populate("assigneeIds", "name email role")
-      .populate("projectId", "name");
+    const projectIdParam = req.query?.projectId ? String(req.query.projectId) : "";
 
-    const normalized = tasks
-      .map((t) => {
-        const json = t.toJSON();
-        json.status = normalizeStatus(json.status);
+    const cacheKey = buildTasksCacheKey({
+      orgId,
+      role,
+      userId,
+      page,
+      limit,
+      projectId: projectIdParam,
+      status: statusParam,
+    });
 
-        if (!json.assigneeId && Array.isArray(json.assigneeIds) && json.assigneeIds.length > 0) {
-          json.assigneeId = json.assigneeIds[0];
-        }
+    const cached = getCachedTasksPage(cacheKey);
+    if (cached) {
+      console.log("[TASK API] Serving from cache");
+      const cachedLen = Array.isArray(cached?.items) ? cached.items.length : Array.isArray(cached) ? cached.length : 0;
+      console.log("[TASKS RETURNED]", cachedLen);
+      return res.json(cached);
+    }
 
-        return json;
-      })
-      .sort((a, b) => {
-        const pr = priorityRank(a.priority) - priorityRank(b.priority);
-        if (pr !== 0) return pr;
+    console.log("[TASK API] Fetching from DB");
 
-        const aTime = a?.createdAt ? new Date(a.createdAt).getTime() : 0;
-        const bTime = b?.createdAt ? new Date(b.createdAt).getTime() : 0;
-        return bTime - aTime;
+    /** @type {any[]} */
+    const filters = [];
+
+    // Org membership + optional project filter
+    if (projectIdParam) {
+      const project = await Project.findOne({ _id: projectIdParam, organizationId: orgId }).select("_id").lean();
+      if (!project) return res.status(404).json({ message: "Project not found" });
+      filters.push({ projectId: projectIdParam });
+    } else {
+      const allowedProjectIds = await getOrgProjectIdsCached(orgId, async () => {
+        const projects = await Project.find({ organizationId: orgId }).select("_id").lean();
+        return projects.map((p) => p._id);
       });
 
-    return res.json(normalized);
+      if (allowedProjectIds.length === 0) {
+        const empty = { items: [], page, limit, total: 0, hasNext: false };
+        setCachedTasksPage(cacheKey, empty, { orgId });
+        console.log("[TASKS RETURNED]", 0);
+        return res.json(empty);
+      }
+
+      filters.push({
+        $or: [{ organizationId: orgId }, { projectId: { $in: allowedProjectIds } }],
+      });
+    }
+
+    // Optional status filter (include legacy stored values for safety)
+    if (statusParam) {
+      const legacy =
+        statusParam === "todo" ? ["todo", "pending"] : statusParam === "done" ? ["done", "completed"] : [statusParam];
+
+      filters.push({ status: { $in: legacy } });
+    }
+
+    // Role scoping
+    if (req.user.role === "user") {
+      filters.push({
+        $or: [{ assigneeId: req.user.userId }, { assigneeIds: req.user.userId }],
+      });
+    }
+
+    const query = filters.length === 1 ? filters[0] : { $and: filters };
+
+    try {
+      const explainData = await Task.find(query).limit(1).explain("executionStats");
+
+      console.log("[MONGO EXPLAIN]", {
+        stage: explainData?.executionStats?.executionStages?.stage,
+        totalDocsExamined: explainData?.executionStats?.totalDocsExamined,
+        totalKeysExamined: explainData?.executionStats?.totalKeysExamined,
+      });
+    } catch (err) {
+      console.log("[MONGO EXPLAIN]", { error: err?.message || String(err) });
+    }
+
+    const start = Date.now();
+
+    const [total, tasks] = await Promise.all([
+      Task.countDocuments(query),
+      Task.find(query)
+        .sort({ createdAt: -1, _id: -1 })
+        .skip(skip)
+        .limit(limit)
+        .populate("assigneeId", "name email role")
+        .populate("assignedBy", "name email role")
+        .populate("assigneeIds", "name email role")
+        .populate("projectId", "name")
+        .lean(),
+    ]);
+
+    const end = Date.now();
+    console.log("[DB QUERY TIME]", end - start, "ms");
+
+    console.log("[TASKS RETURNED]", Array.isArray(tasks) ? tasks.length : 0);
+
+    const items = Array.isArray(tasks) ? tasks.map(normalizeTaskJson) : [];
+
+    const response = {
+      items,
+      page,
+      limit,
+      total,
+      hasNext: skip + items.length < total,
+    };
+
+    setCachedTasksPage(cacheKey, response, { orgId });
+
+    return res.json(response);
   } catch (err) {
     return next(err);
   }
@@ -237,12 +341,7 @@ const updateTaskStatus = async (req, res, next) => {
       .populate("assigneeIds", "name email role")
       .populate("projectId", "name");
 
-    const json = updated.toJSON();
-    json.status = normalizeStatus(json.status);
-
-    if (!json.assigneeId && Array.isArray(json.assigneeIds) && json.assigneeIds.length > 0) {
-      json.assigneeId = json.assigneeIds[0];
-    }
+    const json = normalizeTaskJson(updated);
 
     emitToOrg(req.user.organizationId, "task-updated", json);
     emitToOrg(req.user.organizationId, "task-status-changed", {
@@ -251,6 +350,9 @@ const updateTaskStatus = async (req, res, next) => {
       status: json.status,
       task: json,
     });
+
+    console.log("[CACHE CLEAR TRIGGERED] for org:", req.user.organizationId);
+    invalidateTasksForOrg(req.user.organizationId);
 
     return res.json(json);
   } catch (err) {
