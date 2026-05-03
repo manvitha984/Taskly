@@ -30,6 +30,14 @@ const isDupKeyError = (err) => {
   return code === 11000 || code === 11001;
 };
 
+const logUserError = (label, meta) => {
+  try {
+    console.error(label, meta);
+  } catch {
+    console.error(label);
+  }
+};
+
 const getUsers = async (req, res) => {
   try {
     const orgId = requireOrgId(req, res);
@@ -42,12 +50,13 @@ const getUsers = async (req, res) => {
 
     return res.json(Array.isArray(users) ? users : []);
   } catch (err) {
-    console.error("ERROR:", err);
-    return res.status(500).json({ message: "Server error", error: err?.message || String(err) });
+    logUserError("USERS LIST ERROR", { code: err?.code, name: err?.name, userId: req.user?.userId, role: req.user?.role });
+    return res.status(500).json({ message: "Server error" });
   }
 };
 
 const createUser = async (req, res) => {
+  let normalizedEmail = "";
   try {
     const orgId = requireOrgId(req, res);
     if (!orgId) return;
@@ -55,11 +64,14 @@ const createUser = async (req, res) => {
     const { name, email, password, role } = req.body;
 
     const trimmedName = typeof name === "string" ? name.trim() : "";
-    const normalizedEmail = normalizeEmail(email);
+    normalizedEmail = normalizeEmail(email);
     const pw = typeof password === "string" ? password : "";
 
     if (!trimmedName || !normalizedEmail || !pw) {
-      return res.status(400).json({ message: "name, email and password are required" });
+      return res.status(400).json({ message: "Validation error" });
+    }
+    if (pw.length < 6) {
+      return res.status(400).json({ message: "Password must be at least 6 characters" });
     }
 
     const finalRole = role || "user";
@@ -85,9 +97,15 @@ const createUser = async (req, res) => {
 
     return res.status(201).json(sanitizeUser(user));
   } catch (err) {
-    console.error("CREATE USER ERROR:", err);
+    logUserError("CREATE USER ERROR", {
+      code: err?.code,
+      name: err?.name,
+      email: normalizedEmail,
+      userId: req.user?.userId,
+      role: req.user?.role,
+    });
     if (isDupKeyError(err)) return res.status(409).json({ message: "Email already exists" });
-    return res.status(500).json({ message: "Server error", error: err?.message || String(err) });
+    return res.status(500).json({ message: "Server error" });
   }
 };
 
@@ -114,8 +132,8 @@ const updateUserRole = async (req, res) => {
 
     return res.json(sanitizeUser(user));
   } catch (err) {
-    console.error("ERROR:", err);
-    return res.status(500).json({ message: "Server error", error: err?.message || String(err) });
+    logUserError("UPDATE USER ROLE ERROR", { code: err?.code, name: err?.name, userId: req.user?.userId, role: req.user?.role });
+    return res.status(500).json({ message: "Server error" });
   }
 };
 

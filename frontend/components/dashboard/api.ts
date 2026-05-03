@@ -162,3 +162,18 @@ export const changeUserRole = async (token: string, userId: string, role: "admin
   if (!res.ok) throw new Error((data as any)?.message || "Failed to update user role");
   return data as TeamUser;
 };
+
+export const changePassword = async (token: string, payload: { currentPassword: string; newPassword: string }) => {
+  const url = `${baseUrl()}/auth/change-password`;
+  console.log("CHANGE PASSWORD API CALL", { url, method: "PATCH" });
+
+  const res = await fetch(url, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify(payload),
+  });
+
+  const data = await safeJson(res);
+  if (!res.ok) throw new Error((data as any)?.message || "Failed to update password");
+  return data as { message?: string };
+};

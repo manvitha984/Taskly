@@ -4,10 +4,12 @@ export default function DashboardHeader({
   activeSection,
   onSectionChange,
   onLogout,
+  onChangePassword,
 }: {
   activeSection: "projects" | "tasks" | "teams";
   onSectionChange: (section: "projects" | "tasks" | "teams") => void;
   onLogout: () => void;
+  onChangePassword: () => void;
 }) {
   return (
     <header className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white/90 px-5 py-4 shadow-sm">
@@ -43,6 +45,10 @@ export default function DashboardHeader({
           aria-pressed={activeSection === "teams"}
         >
           Teams
+        </button>
+
+        <button onClick={onChangePassword} className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 hover:bg-slate-50">
+          Change Password
         </button>
 
         <button onClick={onLogout} className="rounded-lg bg-cyan-500 px-3 py-2 text-sm font-semibold text-white hover:bg-cyan-600">

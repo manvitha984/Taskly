@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/router";
 
 import type { AuthUser, Project, Stats, Task, TeamUser } from "../components/dashboard/types";
-import { fetchDashboardData, fetchTasksPage } from "../components/dashboard/api";
+import { changePassword, fetchDashboardData, fetchTasksPage } from "../components/dashboard/api";
 import {
   computeMyProgress,
   computeProgressByUserId,
@@ -52,6 +52,135 @@ const shouldApplyRealtimeUpdate = (currentUser: AuthUser | null, incoming: Task)
   return assigneeId === currentUser._id;
 };
 
+const mapChangePasswordError = (message: string) => {
+  const lower = String(message || "").toLowerCase();
+  if (lower.includes("invalid credentials")) return "Incorrect current password";
+  if (lower.includes("validation")) return "Please fill in all fields.";
+  if (lower.includes("password must be at least 6")) return "Password must be at least 6 characters";
+  return message || "Could not update password";
+};
+
+const ChangePasswordModal = ({
+  token,
+  onClose,
+}: {
+  token: string | null;
+  onClose: () => void;
+}) => {
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
+
+  const canSubmit = useMemo(() => {
+    return Boolean(currentPassword.trim()) && Boolean(newPassword.trim()) && Boolean(confirmPassword.trim());
+  }, [currentPassword, newPassword, confirmPassword]);
+
+  const submit = async (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+
+    if (!token) {
+      setError("Not authorized");
+      return;
+    }
+
+    const current = currentPassword.trim();
+    const next = newPassword.trim();
+    const confirm = confirmPassword.trim();
+
+    if (!current || !next || !confirm) {
+      setError("Please fill in all fields.");
+      return;
+    }
+    if (next.length < 6) {
+      setError("Password must be at least 6 characters");
+      return;
+    }
+    if (next !== confirm) {
+      setError("Passwords do not match");
+      return;
+    }
+
+    setSubmitting(true);
+    setError("");
+    setSuccess("");
+
+    try {
+      await changePassword(token, { currentPassword: current, newPassword: next });
+      setSuccess("Password updated successfully");
+    } catch (err) {
+      const message = (err as Error).message || "Could not update password";
+      setError(mapChangePasswordError(message));
+    } finally {
+      setSubmitting(false);
+      setCurrentPassword("");
+      setNewPassword("");
+      setConfirmPassword("");
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 grid place-items-center bg-slate-900/40 px-4">
+      <form onSubmit={submit} className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-xl">
+        <h3 className="text-xl font-bold text-slate-900">Change Password</h3>
+
+        {error ? (
+          <p className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>
+        ) : null}
+
+        {success ? (
+          <p className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">{success}</p>
+        ) : null}
+
+        <input
+          type="password"
+          className="mt-4 w-full rounded-lg border border-slate-300 px-3 py-2.5"
+          placeholder="Current password"
+          value={currentPassword}
+          onChange={(e) => setCurrentPassword(e.target.value)}
+          autoComplete="current-password"
+          required
+        />
+
+        <input
+          type="password"
+          className="mt-3 w-full rounded-lg border border-slate-300 px-3 py-2.5"
+          placeholder="New password"
+          value={newPassword}
+          onChange={(e) => setNewPassword(e.target.value)}
+          autoComplete="new-password"
+          required
+        />
+
+        <input
+          type="password"
+          className="mt-3 w-full rounded-lg border border-slate-300 px-3 py-2.5"
+          placeholder="Confirm new password"
+          value={confirmPassword}
+          onChange={(e) => setConfirmPassword(e.target.value)}
+          autoComplete="new-password"
+          required
+        />
+
+        <div className="mt-5 flex justify-end gap-2">
+          <button type="button" onClick={onClose} className="rounded-lg border border-slate-300 px-4 py-2 text-sm">
+            Close
+          </button>
+          <button
+            type="submit"
+            disabled={submitting || !canSubmit}
+            className="rounded-lg bg-cyan-500 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {submitting ? "Updating..." : "Update Password"}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+};
+
 export default function Dashboard() {
   const [mounted, setMounted] = useState(false);
   const [token, setToken] = useState<string | null>(null);
@@ -77,6 +206,7 @@ export default function Dashboard() {
   const [activeSection, setActiveSection] = useState<"projects" | "tasks" | "teams">("projects");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
+  const [showChangePassword, setShowChangePassword] = useState(false);
 
   const router = useRouter();
 
@@ -258,7 +388,16 @@ export default function Dashboard() {
   return (
     <main className="min-h-screen px-4 py-6 sm:px-6 lg:px-8">
       <div className="mx-auto w-full max-w-7xl">
-        <DashboardHeader activeSection={activeSection} onSectionChange={setActiveSection} onLogout={logout} />
+        <DashboardHeader
+          activeSection={activeSection}
+          onSectionChange={setActiveSection}
+          onLogout={logout}
+          onChangePassword={() => setShowChangePassword(true)}
+        />
+
+        {showChangePassword ? (
+          <ChangePasswordModal token={token} onClose={() => setShowChangePassword(false)} />
+        ) : null}
 
         {error ? (
           <p className="mb-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>
