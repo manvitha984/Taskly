@@ -1,4 +1,5 @@
 const jwt = require("jsonwebtoken");
+const User = require("../models/User");
 
 const normalizeDecodedUser = (decoded) => {
   const userId = decoded?.userId
@@ -22,7 +23,7 @@ const normalizeDecodedUser = (decoded) => {
   };
 };
 
-const protect = (req, res, next) => {
+const protect = async (req, res, next) => {
   const header = req.headers.authorization || "";
   if (!header.startsWith("Bearer ")) {
     return res.status(401).json({ message: "Not authorized" });
@@ -33,11 +34,26 @@ const protect = (req, res, next) => {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
     const user = normalizeDecodedUser(decoded);
-    if (!user.userId || !user.organizationId || !user.role) {
+    if (!user.userId || !user.organizationId) {
       return res.status(401).json({ message: "Invalid token" });
     }
 
-    req.user = user;
+    const dbUser = await User.findOne({ _id: user.userId, organizationId: user.organizationId })
+      .select("_id role email")
+      .lean();
+
+    if (!dbUser || !dbUser.role) {
+      return res.status(401).json({ message: "Invalid token" });
+    }
+
+    console.log("DB ROLE:", dbUser.role);
+
+    req.user = {
+      ...user,
+      role: String(dbUser.role),
+      email: String(dbUser.email || user.email || ""),
+    };
+
     return next();
   } catch (err) {
     console.error("ERROR:", err);

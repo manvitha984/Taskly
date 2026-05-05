@@ -2,6 +2,22 @@ const Project = require("../models/Project");
 const Task = require("../models/Task");
 const User = require("../models/User");
 const { invalidateOrgProjectIds } = require("../utils/taskCache");
+const { getIo } = require("../socket");
+
+const emitToOrg = (organizationId, eventName, payload) => {
+  const room = `org_${organizationId}`;
+
+  try {
+    const io = getIo();
+    io.to(room).emit(eventName, payload);
+  } catch (err) {
+    console.log("[socket] emit failed (io not ready?)", {
+      eventName,
+      room,
+      message: err?.message,
+    });
+  }
+};
 
 const createProject = async (req, res, next) => {
   try {
@@ -33,6 +49,8 @@ const createProject = async (req, res, next) => {
       leaderId: finalLeaderId,
       tasks: [],
     });
+
+    emitToOrg(req.user.organizationId, "project:created", project);
 
     invalidateOrgProjectIds(req.user.organizationId);
 

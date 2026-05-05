@@ -80,6 +80,8 @@ const normalizeTaskJson = (t) => {
 
 const createTask = async (req, res, next) => {
   try {
+    console.log("REQ.USER:", req.user);
+
     if (!["admin", "leader"].includes(req.user.role)) {
       return res.status(403).json({ message: "Only admin/leader can create tasks" });
     }

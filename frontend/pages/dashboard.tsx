@@ -340,6 +340,33 @@ export default function Dashboard() {
     setTasks((prev) => upsertTask(prev, normalized));
   }, []);
 
+  const onUserRoleUpdated = useCallback((payload: { userId?: string; role?: TeamUser["role"] }) => {
+    const userId = payload?.userId ? String(payload.userId) : "";
+    const role = payload?.role;
+
+    if (!userId || !role) return;
+
+    setTeam((prev) => prev.map((u) => (String(u._id) === userId ? { ...u, role } : u)));
+
+    const current = currentUserRef.current;
+    if (current && String(current._id) === userId && current.role !== role) {
+      const updated = { ...current, role };
+      setCurrentUser(updated);
+      localStorage.setItem("taskly_user", JSON.stringify(updated));
+    }
+  }, []);
+
+  const onProjectCreated = useCallback((incoming: Project) => {
+    const id = String((incoming as any)?._id || "");
+    if (!id) return;
+
+    setProjects((prev) => {
+      const exists = prev.some((p) => String((p as any)?._id) === id);
+      if (exists) return prev;
+      return [incoming, ...prev];
+    });
+  }, []);
+
   useEffect(() => {
     if (!token) return;
 
@@ -348,18 +375,24 @@ export default function Dashboard() {
     socket.off("task-created", onTaskCreated);
     socket.off("task-updated", onTaskUpdated);
     socket.off("task-status-changed", onTaskStatusChanged);
+    socket.off("user:role-updated", onUserRoleUpdated);
+    socket.off("project:created", onProjectCreated);
 
     socket.on("task-created", onTaskCreated);
     socket.on("task-updated", onTaskUpdated);
     socket.on("task-status-changed", onTaskStatusChanged);
+    socket.on("user:role-updated", onUserRoleUpdated);
+    socket.on("project:created", onProjectCreated);
 
     return () => {
       socket.off("task-created", onTaskCreated);
       socket.off("task-updated", onTaskUpdated);
       socket.off("task-status-changed", onTaskStatusChanged);
+      socket.off("user:role-updated", onUserRoleUpdated);
+      socket.off("project:created", onProjectCreated);
       disconnectSocket();
     };
-  }, [token, onTaskCreated, onTaskUpdated, onTaskStatusChanged]);
+  }, [token, onTaskCreated, onTaskUpdated, onTaskStatusChanged, onUserRoleUpdated, onProjectCreated]);
 
   const logout = () => {
     disconnectSocket();
@@ -400,7 +433,17 @@ export default function Dashboard() {
         ) : null}
 
         {error ? (
-          <p className="mb-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>
+          <div className="mb-4 flex items-start justify-between gap-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+            <span>{error}</span>
+            <button
+              type="button"
+              onClick={() => setError("")}
+              className="rounded-md px-2 py-0.5 text-xs font-semibold text-red-700 hover:bg-red-100"
+              aria-label="Dismiss error"
+            >
+              ✕
+            </button>
+          </div>
         ) : null}
 
         <StatsGrid

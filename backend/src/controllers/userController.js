@@ -1,6 +1,7 @@
 const mongoose = require("mongoose");
 const User = require("../models/User");
 const Organization = require("../models/Organization");
+const { getIo } = require("../socket");
 
 const allowedRoles = new Set(["admin", "leader", "user"]);
 
@@ -35,6 +36,21 @@ const logUserError = (label, meta) => {
     console.error(label, meta);
   } catch {
     console.error(label);
+  }
+};
+
+const emitToOrg = (organizationId, eventName, payload) => {
+  const room = `org_${organizationId}`;
+
+  try {
+    const io = getIo();
+    io.to(room).emit(eventName, payload);
+  } catch (err) {
+    console.log("[socket] emit failed (io not ready?)", {
+      eventName,
+      room,
+      message: err?.message,
+    });
   }
 };
 
@@ -129,6 +145,11 @@ const updateUserRole = async (req, res) => {
 
     user.role = role;
     await user.save();
+
+    emitToOrg(orgId, "user:role-updated", {
+      userId: String(user._id),
+      role: user.role,
+    });
 
     return res.json(sanitizeUser(user));
   } catch (err) {
