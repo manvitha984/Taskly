@@ -14,6 +14,8 @@ const auxCache = new MemoryCache({
 });
 
 const tasksTagForOrg = (orgId) => `tasks:org:${String(orgId || "")}`;
+const tasksTagForProject = (projectId) => `tasks:project:${String(projectId || "")}`;
+const tasksTagForUser = (userId) => `tasks:user:${String(userId || "")}`;
 const orgProjectsTagForOrg = (orgId) => `org-project-ids:org:${String(orgId || "")}`;
 
 const orgProjectIdsKey = (orgId) => `orgProjectIds:${String(orgId || "")}`;
@@ -42,18 +44,47 @@ const buildTasksCacheKey = ({
   const pid = safeKeyPart(projectId);
   const st = safeKeyPart(status);
 
-  return `tasks:v1:org=${o}:role=${r}:user=${u}:page=${p}:limit=${l}:project=${pid}:status=${st}`;
+  return `tasks:v2:org=${o}:project=${pid}:role=${r}:user=${u}:page=${p}:limit=${l}:status=${st}`;
 };
 
 const getCachedTasksPage = (key) => tasksCache.get(key);
 
-const setCachedTasksPage = (key, value, { orgId, ttlMs } = {}) => {
-  const tag = tasksTagForOrg(orgId);
-  tasksCache.set(key, value, { ttlMs, tags: [tag] });
+const setCachedTasksPage = (key, value, { orgId, projectId, userId, role, ttlMs } = {}) => {
+  const tags = [tasksTagForOrg(orgId)];
+  if (projectId) tags.push(tasksTagForProject(projectId));
+  if (role === "user" && userId) tags.push(tasksTagForUser(userId));
+
+  if (!projectId) {
+    const items = Array.isArray(value?.items) ? value.items : Array.isArray(value) ? value : [];
+    if (items.length > 0) {
+      const projectIds = new Set();
+      for (const task of items) {
+        const pid = typeof task?.projectId === "string" ? task.projectId : task?.projectId?._id;
+        if (pid) projectIds.add(String(pid));
+      }
+      for (const pid of projectIds) {
+        tags.push(tasksTagForProject(pid));
+      }
+    }
+  }
+
+  tasksCache.set(key, value, { ttlMs, tags });
 };
 
 const invalidateTasksForOrg = (orgId) => {
   tasksCache.invalidateTag(tasksTagForOrg(orgId));
+};
+
+const invalidateTasksForProject = (projectId) => {
+  if (!projectId) return 0;
+  console.log("[CACHE INVALIDATED - PROJECT] project:", String(projectId));
+  return tasksCache.invalidateTag(tasksTagForProject(projectId));
+};
+
+const invalidateTasksForUser = (userId) => {
+  if (!userId) return 0;
+  console.log("[CACHE INVALIDATED - USER] user:", String(userId));
+  return tasksCache.invalidateTag(tasksTagForUser(userId));
 };
 
 const getOrgProjectIdsCached = async (orgId, fetcher) => {
@@ -76,6 +107,8 @@ module.exports = {
   getCachedTasksPage,
   setCachedTasksPage,
   invalidateTasksForOrg,
+  invalidateTasksForProject,
+  invalidateTasksForUser,
   getOrgProjectIdsCached,
   invalidateOrgProjectIds,
 };

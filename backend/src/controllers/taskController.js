@@ -7,7 +7,8 @@ const {
   buildTasksCacheKey,
   getCachedTasksPage,
   setCachedTasksPage,
-  invalidateTasksForOrg,
+  invalidateTasksForProject,
+  invalidateTasksForUser,
   getOrgProjectIdsCached,
 } = require("../utils/taskCache");
 
@@ -29,6 +30,12 @@ const taskAssigneeMatchesUser = (task, userId) => {
   const legacy = Array.isArray(task.assigneeIds) ? task.assigneeIds : [];
   const legacyIds = legacy.map((x) => (typeof x === "string" ? x : String(x?._id || x)));
   return legacyIds.includes(uid);
+};
+
+const getPrimaryAssigneeId = (task) => {
+  if (task?.assigneeId) return toStringId(task.assigneeId);
+  const legacy = Array.isArray(task?.assigneeIds) ? task.assigneeIds : [];
+  return legacy.length > 0 ? toStringId(legacy[0]) : "";
 };
 
 const emitToOrg = (organizationId, eventName, payload) => {
@@ -159,8 +166,8 @@ const createTask = async (req, res, next) => {
     emitToOrg(req.user.organizationId, "task-created", payload);
     emitToOrg(req.user.organizationId, "task-updated", payload);
 
-    console.log("[CACHE CLEAR TRIGGERED] for org:", req.user.organizationId);
-    invalidateTasksForOrg(req.user.organizationId);
+    invalidateTasksForProject(toStringId(projectId));
+    invalidateTasksForUser(toStringId(validatedAssignee._id));
 
     return res.status(201).json(task);
   } catch (err) {
@@ -209,10 +216,8 @@ const getTasks = async (req, res, next) => {
 
     console.log("[TASK API] Fetching from DB");
 
-    /** @type {any[]} */
     const filters = [];
 
-    // Org membership + optional project filter
     if (projectIdParam) {
       const project = await Project.findOne({ _id: projectIdParam, organizationId: orgId }).select("_id").lean();
       if (!project) return res.status(404).json({ message: "Project not found" });
@@ -225,7 +230,7 @@ const getTasks = async (req, res, next) => {
 
       if (allowedProjectIds.length === 0) {
         const empty = { items: [], page, limit, total: 0, hasNext: false };
-        setCachedTasksPage(cacheKey, empty, { orgId });
+        setCachedTasksPage(cacheKey, empty, { orgId, projectId: projectIdParam, userId, role });
         console.log("[TASKS RETURNED]", 0);
         return res.json(empty);
       }
@@ -235,7 +240,6 @@ const getTasks = async (req, res, next) => {
       });
     }
 
-    // Optional status filter (include legacy stored values for safety)
     if (statusParam) {
       const legacy =
         statusParam === "todo" ? ["todo", "pending"] : statusParam === "done" ? ["done", "completed"] : [statusParam];
@@ -243,7 +247,6 @@ const getTasks = async (req, res, next) => {
       filters.push({ status: { $in: legacy } });
     }
 
-    // Role scoping
     if (req.user.role === "user") {
       filters.push({
         $or: [{ assigneeId: req.user.userId }, { assigneeIds: req.user.userId }],
@@ -294,7 +297,7 @@ const getTasks = async (req, res, next) => {
       hasNext: skip + items.length < total,
     };
 
-    setCachedTasksPage(cacheKey, response, { orgId });
+    setCachedTasksPage(cacheKey, response, { orgId, projectId: projectIdParam, userId, role });
 
     return res.json(response);
   } catch (err) {
@@ -353,8 +356,11 @@ const updateTaskStatus = async (req, res, next) => {
       task: json,
     });
 
-    console.log("[CACHE CLEAR TRIGGERED] for org:", req.user.organizationId);
-    invalidateTasksForOrg(req.user.organizationId);
+    const projectId = toStringId(task.projectId?._id || task.projectId);
+    const assigneeId = getPrimaryAssigneeId(task);
+
+    invalidateTasksForProject(projectId);
+    invalidateTasksForUser(assigneeId);
 
     return res.json(json);
   } catch (err) {
